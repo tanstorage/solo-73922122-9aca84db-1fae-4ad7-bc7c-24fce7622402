@@ -7,6 +7,17 @@
 {% if result %}
   {% if result.ok %}
   <div class="card notice-ok"><h3>✔ 发布成功</h3>{{ result.message }}</div>
+  {% elif result.review_failed %}
+  <div class="card notice-bad">
+    <h3>⚠ 兼容审查未完成（已发布格式未变）</h3>
+    <p>{{ result.message }}</p>
+    <p class="muted">审查工作进程崩溃或超时，本次发布未生效；可修正后重新提交，其他型号的发布不受影响。</p>
+  </div>
+  {% elif result.conflict %}
+  <div class="card notice-bad">
+    <h3>⧖ 同型号并发发布冲突（已发布格式未变）</h3>
+    <p>{{ result.message }}</p>
+  </div>
   {% else %}
   <div class="card notice-bad">
     <h3>✘ 发布被拒绝</h3>
@@ -89,6 +100,7 @@
     <td>{{ "固件" if l.action == "firmware" else "程序" }}{% if l.program_id %}「{{ l.program_id }}」{% endif %}</td>
     <td>{% if l.result == "published" %}<span style="color:var(--ok)">已发布</span>
         {% elif l.result == "rejected" %}<span style="color:var(--bad)">已拒绝</span>
+        {% elif l.result == "review_failed" %}<span class="err">审查未完成</span>
         {% else %}<span class="err">无效</span>{% endif %}</td>
     <td>{% if l.detail %}<pre>{{ l.detail | tojson }}</pre>{% endif %}</td>
   </tr>

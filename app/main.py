@@ -15,6 +15,7 @@ import service
 from db import (Base, DeviceModel, FirmwareFormat, ProgramFormat, PublishLog,
                 SessionLocal, engine)
 from examples import EXAMPLES
+from review import shutdown_review_pool
 
 BASE_DIR = Path(__file__).resolve().parent
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
@@ -39,7 +40,10 @@ def _wait_for_db(retries=40, delay=1.0):
 async def lifespan(app):
     _wait_for_db()
     Base.metadata.create_all(engine)
-    yield
+    try:
+        yield
+    finally:
+        shutdown_review_pool()
 
 
 app = FastAPI(title="水质平台报文契约发布", lifespan=lifespan)
@@ -164,7 +168,12 @@ def _outcome_response(outcome: service.PublishOutcome, extra=None):
         body["problems"] = outcome.problems
     if extra:
         body.update(extra)
-    status = 200 if outcome.ok else (409 if outcome.problems else 422)
+    if outcome.ok:
+        status = 200
+    elif outcome.review_failed:
+        status = 500  # 审查未能完成（工作进程崩溃/超时），不是格式不兼容
+    else:
+        status = 409 if (outcome.problems or outcome.conflict) else 422
     return JSONResponse(body, status_code=status)
 
 

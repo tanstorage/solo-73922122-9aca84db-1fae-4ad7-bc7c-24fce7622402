@@ -6,10 +6,15 @@
 
 报文编码：对每个字段建立 4 个变量 —— 是否出现 present、值类型 kind
 (0=null, 1=integer, 2=string)、整数值 ival、字符串值在字段字符串表中的下标 sval。
+
+并发说明：z3 Python 绑定默认把所有 Solver/AST 挂在进程级全局 main_ctx 上，
+多线程共用同一 Z3 context 会破坏内部状态并触发段错误。这里每次求解都新建
+**独立的 z3.Context**，并且该 Context 只在本次调用内使用——兼容审查由
+review.py 放进独立工作进程执行，进程内不并发访问任何 Z3 对象。
 """
 from __future__ import annotations
 
-from z3 import And, Bool, Implies, Int, Not, Or, Solver, is_true, sat
+from z3 import And, Bool, Context, Implies, Int, Not, Or, Solver, is_true, sat
 
 from schema_spec import Schema, message_valid
 
@@ -18,15 +23,16 @@ SOLVER_TIMEOUT_MS = 15000
 
 
 class _Encoder:
-    def __init__(self, fields, str_tables):
+    def __init__(self, fields, str_tables, ctx):
         self.fields = fields
         self.str_tables = str_tables  # field -> sorted list[str]
+        self.ctx = ctx
         self.present, self.kind, self.ival, self.sval = {}, {}, {}, {}
         for i, f in enumerate(fields):
-            self.present[f] = Bool(f"p{i}")
-            self.kind[f] = Int(f"k{i}")
-            self.ival[f] = Int(f"v{i}")
-            self.sval[f] = Int(f"s{i}")
+            self.present[f] = Bool(f"p{i}", ctx=ctx)
+            self.kind[f] = Int(f"k{i}", ctx=ctx)
+            self.ival[f] = Int(f"v{i}", ctx=ctx)
+            self.sval[f] = Int(f"s{i}", ctx=ctx)
 
     def wellformed(self):
         cons = []
@@ -78,7 +84,12 @@ class _Encoder:
 
 
 def find_counterexample(write: Schema, read: Schema):
-    """若存在被 read 拒收的 write 合法报文，返回该报文 dict；否则返回 None。"""
+    """若存在被 read 拒收的 write 合法报文，返回该报文 dict；否则返回 None。
+
+    每次调用使用独立 z3.Context：不触碰 z3 进程级全局 main_ctx，
+    Context 及其全部 AST/Solver 只在本函数存活，不会跨线程共享。
+    """
+    ctx = Context()
     names = set()
     for sch in (write, read):
         for b in sch.branches:
@@ -95,8 +106,8 @@ def find_counterexample(write: Schema, read: Schema):
         if strs:
             str_tables[f] = sorted(strs)
 
-    enc = _Encoder(fields, str_tables)
-    s = Solver()
+    enc = _Encoder(fields, str_tables, ctx)
+    s = Solver(ctx=ctx)
     s.set("timeout", SOLVER_TIMEOUT_MS)
     s.add(enc.wellformed())
     s.add(enc.schema_ok(write))
@@ -129,6 +140,9 @@ def check_compatibility(fw_pairs, prog_pairs):
 
     fw_pairs: [(version, Schema)]，prog_pairs: [(program_id, Schema)]
     返回问题列表 [{firmware_version, program_id, counterexample}]，空列表表示全部兼容。
+
+    纯函数：不访问数据库，每次内部求解使用独立 z3.Context；可被 review.py
+    整体投递到独立工作进程执行（进程间只传递 Schema/基础类型）。
     """
     problems = []
     for fv, fw in fw_pairs:

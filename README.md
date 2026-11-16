@@ -51,12 +51,30 @@ docker compose up --build
 - **SAT** ⇒ 从模型还原一个反例报文，并用独立的纯 Python 判定器复核
   （确实满足 W、确实被 R 拒收）后随拒绝结果返回。
 
+每次求解使用独立的 `z3.Context`（不触碰进程级全局 main_ctx），且整段审查
+在 `review.py` 的独立 spawn 工作进程内执行，从根本上避免多线程共享 Z3
+context 导致的段错误。
+
 ## 并发与事务
 
-- 每次发布在事务内先对型号行加锁（PostgreSQL `SELECT ... FOR UPDATE`），
-  再基于最新已提交状态做**全量交叉检查**后落库——并发升级被串行化，
-  不会各自通过却留下不兼容组合；
-- 检查失败整体回滚，**已发布格式不变**；拒绝/无效尝试另写发布日志留痕；
+- **进程隔离的兼容审查**：z3 的 Python 绑定默认共享进程级全局 Z3 context，
+  Web 进程内多线程并发求解会破坏其原生层状态并触发**段错误**，使发布进程退出。
+  因此每次全量兼容审查都被投递到独立的 **spawn 常驻守护工作进程池**执行
+  （每次求解另建独立 `z3.Context`，进程间只传递普通数据，不传递任何 z3 对象）：
+  - 不同型号的审查在不同工作进程中**真正并行**，一个型号长求解不阻塞其他型号，
+    网页与查询接口全程可查看当前已发布格式；
+  - 工作进程若原生崩溃（段错误等），只终结该工作进程：父进程摘除并立即补建
+    新进程，本次审查按失败处理（HTTP 500、已发布格式不变、日志留痕），Web 进程存活；
+  - 审查整体超时走同一摘除/补建路径，绝不带着悬挂任务复用进程；
+  - 工作进程均为 daemon，关闭时不 join、不发信号（避免未排空队列的 join 死锁与
+    信号受限环境的 PermissionError），由操作系统在父进程退出时回收；退出前由
+    `review.py` 的 atexit 处理器把它们从 multiprocessing 子进程登记中摘除。
+- **锁外审查 + 短事务复核**：审查期间**不持有数据库锁**（避免长求解把不同型号
+  也串行化）。先读只读快照并在工作进程审查，通过后才开短事务：锁定型号行 →
+  重新读取 → 复核快照未被同型号并发提交改变 → 落库；快照过期则放弃本次结论并重试。
+- 由此**同型号并发升级仍被严格串行化**（行锁 + 快照复核 + 有限重试），
+  不会各自通过却留下不兼容组合；检查失败整体回滚，**已发布格式不变**；
+  拒绝/无效/审查失败尝试另写发布日志留痕。
 - 固件格式只追加（无修改/删除入口），程序格式按程序号替换；各至多 8 份。
 
 ## JSON API
@@ -76,25 +94,31 @@ docker compose up --build
 ```bash
 pip install -r app/requirements.txt httpx
 python3 tests/test_units.py                 # 语法子集 + z3 判定单元自测
+python3 tests/test_parallel.py              # 并行交错：跨型号并行/同型号串行/崩溃隔离/超时
 cd app && DATABASE_URL=sqlite:////tmp/contracts.db uvicorn main:app --port 8000 &
 python3 tests/selftest.py                   # 集成自测（示例/上限/并发/页面）
 ```
 
 `DATABASE_URL` 缺省为 SQLite（便于本地自测）；Compose 中注入 PostgreSQL 连接串。
+`tests/test_parallel.py` 直接驱动 service 层与审查进程池，使用独立临时库，
+通过任务参数注入工作进程延迟（制造可复现交错）与原生崩溃（验证进程隔离与自愈），
+不依赖也不会修改生产配置。
 
 ## 目录结构
 
 ```
 app/
   main.py         FastAPI 入口（HTML 页面 + JSON API）
-  service.py      发布事务：加锁 → 全量检查 → 落库/回滚
-  solver.py       z3 编码与全量兼容判定（含反例复核）
+  service.py      锁外审查 -> 短事务加锁复核 -> 落库/回滚（含同型号并发重试）
+  review.py       spawn 工作进程池：进程隔离、崩溃/超时自愈的兼容审查调度
+  solver.py       z3 编码与全量兼容判定（独立 Context，含反例复核）
   schema_spec.py  受限 JSON Schema 子集解析与纯 Python 报文判定
   db.py           SQLAlchemy 模型（PostgreSQL JSONB / SQLite JSON）
   examples.py     温度扩范围、质控码缺省、anyOf 示例
   templates/      页面模板
 tests/
-  test_units.py   单元自测
-  selftest.py     集成自测
+  test_units.py     单元自测
+  test_parallel.py  并行交错验证（跨型号并行、同型号串行、崩溃/超时隔离）
+  selftest.py       集成自测
 docker-compose.yml
 ```
