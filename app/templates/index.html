@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>设备型号</h1>
+<p class="muted">按设备型号登记历代固件写入格式与现用程序读取格式（各至多 8 份）。
+每次发布前，系统用 z3 对「全部历代写入格式 × 全部现用程序」做全量兼容判定：
+任一写入格式允许的全部报文必须被每个现用程序接受，否则拒绝发布并给出合法反例报文与拒收程序。</p>
+
+{% if error %}<p class="err">{{ error }}</p>{% endif %}
+
+<table>
+  <tr><th>型号</th><th>固件写入格式（历代）</th><th>程序读取格式（现用）</th><th></th></tr>
+  {% for r in rows %}
+  <tr>
+    <td><b>{{ r.name }}</b></td>
+    <td>{{ r.fw_count }} / 8 份</td>
+    <td>{{ r.pg_count }} / 8 个程序</td>
+    <td><a href="/models/{{ r.name }}">进入管理 →</a></td>
+  </tr>
+  {% else %}
+  <tr><td colspan="4" class="muted">暂无型号，请先创建。</td></tr>
+  {% endfor %}
+</table>
+
+<h2>新建型号</h2>
+<form method="post" action="/models">
+  <input type="text" name="name" placeholder="如 WQ-5000" required pattern="[A-Za-z0-9][A-Za-z0-9_.\-]{0,63}">
+  <button type="submit">创建</button>
+</form>
+{% endblock %}

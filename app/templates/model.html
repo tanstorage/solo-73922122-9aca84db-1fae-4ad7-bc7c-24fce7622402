@@ -1,0 +1,114 @@
+{% extends "base.html" %}
+{% block title %}型号 {{ model.name }} · 契约管理{% endblock %}
+{% block content %}
+<h1>型号 <span class="tag">{{ model.name }}</span></h1>
+<p class="muted">固件格式只追加；程序格式按程序号替换。发布即触发全量兼容检查（z3 证明，非抽样），失败不改动任何已发布格式。</p>
+
+{% if result %}
+  {% if result.ok %}
+  <div class="card notice-ok"><h3>✔ 发布成功</h3>{{ result.message }}</div>
+  {% else %}
+  <div class="card notice-bad">
+    <h3>✘ 发布被拒绝</h3>
+    <p>{{ result.message }}</p>
+    {% if result.problems %}
+      <p><b>拒绝依据（不兼容组合与反例报文）：</b></p>
+      {% for p in result.problems %}
+      <div class="card cex">
+        固件写入格式 <b>v{{ p.firmware_version }}</b> 允许的报文被程序
+        <b>「{{ p.program_id }}」</b>拒收，反例报文：
+        <pre>{{ p.counterexample | tojson }}</pre>
+      </div>
+      {% endfor %}
+    {% endif %}
+  </div>
+  {% endif %}
+{% endif %}
+
+<div class="cols">
+  <div>
+    <h2>历代固件写入格式（{{ firmwares | length }} / {{ max_formats }}，只追加）</h2>
+    {% for f in firmwares %}
+    <div class="card">
+      <b>v{{ f.version }}</b> <span class="muted">{{ f.created_at }}</span>
+      <pre>{{ f.doc | tojson }}</pre>
+    </div>
+    {% else %}<p class="muted">尚未登记固件格式。</p>{% endfor %}
+  </div>
+  <div>
+    <h2>现用程序读取格式（{{ programs | length }} / {{ max_formats }}，按程序号替换）</h2>
+    {% for p in programs %}
+    <div class="card">
+      <b>{{ p.program_id }}</b> <span class="muted">{{ p.updated_at }}</span>
+      <pre>{{ p.doc | tojson }}</pre>
+    </div>
+    {% else %}<p class="muted">尚未登记程序格式。</p>{% endfor %}
+  </div>
+</div>
+
+<h2>发布新格式</h2>
+<div class="cols">
+  <div class="card">
+    <h3 style="margin-top:0">追加固件写入格式（v{{ (firmwares | length) + 1 }}）</h3>
+    <form method="post" action="/models/{{ model.name }}/firmware">
+      <textarea id="fw_schema" name="schema_text" placeholder='{"type":"object","properties":{...},"required":[...],"additionalProperties":false}'></textarea>
+      <button type="submit">校验并发布固件格式</button>
+    </form>
+  </div>
+  <div class="card">
+    <h3 style="margin-top:0">发布 / 替换程序读取格式</h3>
+    <form method="post" action="/models/{{ model.name }}/programs">
+      <p>程序号：<input type="text" id="prog_id" name="program_id" required
+         pattern="[A-Za-z0-9][A-Za-z0-9_.\-]{0,63}" placeholder="如 analyzer"></p>
+      <textarea id="prog_schema" name="schema_text" placeholder='{"type":"object","properties":{...},"required":[...],"additionalProperties":false}'></textarea>
+      <button type="submit">校验并发布程序格式</button>
+    </form>
+  </div>
+</div>
+
+<h2>示例（点击填入编辑器）</h2>
+{% for ex in examples %}
+<div class="card">
+  <b>{{ ex.title }}</b>
+  <p class="muted">{{ ex.story }}</p>
+  <p class="muted">操作步骤：{{ ex.steps | join(" → ") }}</p>
+  {% for s in ex.snippets %}
+  <button type="button" class="btn-sm" onclick="fillSnippet(this)"
+          data-target="{{ s.target }}" data-prog="{{ s.program_id or '' }}"
+          data-doc='{{ s.doc | tojsonc }}'>填入：{{ s.label }}</button>
+  {% endfor %}
+</div>
+{% endfor %}
+
+<h2>发布日志（最近 50 条，含拒绝依据）</h2>
+<table>
+  <tr><th>时间</th><th>动作</th><th>结果</th><th>详情</th></tr>
+  {% for l in logs %}
+  <tr>
+    <td class="muted">{{ l.created_at }}</td>
+    <td>{{ "固件" if l.action == "firmware" else "程序" }}{% if l.program_id %}「{{ l.program_id }}」{% endif %}</td>
+    <td>{% if l.result == "published" %}<span style="color:var(--ok)">已发布</span>
+        {% elif l.result == "rejected" %}<span style="color:var(--bad)">已拒绝</span>
+        {% else %}<span class="err">无效</span>{% endif %}</td>
+    <td>{% if l.detail %}<pre>{{ l.detail | tojson }}</pre>{% endif %}</td>
+  </tr>
+  {% else %}
+  <tr><td colspan="4" class="muted">暂无日志。</td></tr>
+  {% endfor %}
+</table>
+
+<script>
+function fillSnippet(btn) {
+  const target = btn.dataset.target;
+  const doc = JSON.parse(btn.dataset.doc);
+  if (target === 'firmware') {
+    document.getElementById('fw_schema').value = JSON.stringify(doc, null, 2);
+    document.getElementById('fw_schema').scrollIntoView({behavior: 'smooth'});
+  } else {
+    document.getElementById('prog_id').value = btn.dataset.prog || '';
+    document.getElementById('prog_schema').value = JSON.stringify(doc, null, 2);
+    document.getElementById('prog_schema').scrollIntoView({behavior: 'smooth'});
+  }
+}
+</script>
+{% endblock %}
